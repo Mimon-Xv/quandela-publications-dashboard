@@ -282,6 +282,21 @@ def main():
         height=500,
     )
 
+    st.markdown("---")
+    st.subheader("Publications par année")
+
+    if st.button("Afficher le tableau du nombre de publications par année"):
+        pubs_per_year = (
+            grouped.groupby("year")["arxiv_id"]
+            .nunique()
+            .reset_index(name="nombre_de_publications")
+            .sort_values("year", ascending=True)
+        )
+        st.dataframe(
+            pubs_per_year,
+            use_container_width=False,
+        )
+
     st.markdown(
         """
         #### Comment mettre à jour la liste des auteurs ?
