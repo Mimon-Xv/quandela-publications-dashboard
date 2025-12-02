@@ -155,7 +155,7 @@ def main():
         )
         return
 
-    # Liste des années disponibles
+    # Liste des années disponibles (vue globale)
     if "year" in pubs.columns:
         years = sorted(pubs["year"].dropna().unique())
     else:
@@ -187,8 +187,40 @@ def main():
         value="",
     )
 
+    # Limites globales de dates (pour filtre sur la table détaillée)
+    merged_published_dt = pd.to_datetime(merged["published"], errors="coerce")
+    min_date = merged_published_dt.min()
+    max_date = merged_published_dt.max()
+    if pd.isna(min_date) or pd.isna(max_date):
+        min_date = None
+        max_date = None
+
+    st.sidebar.markdown("**Filtres supplémentaires (table détaillée)**")
+    author_substring = st.sidebar.text_input(
+        "Nom d'auteur contient...",
+        value="",
+        help="Filtre sur la colonne `author_name` (contient, insensible à la casse)",
+    )
+    if min_date and max_date:
+        date_range = st.sidebar.date_input(
+            "Intervalle de dates (published)",
+            (min_date.date(), max_date.date()),
+        )
+    else:
+        date_range = None
+
     # Préparation du DataFrame détaillé (une ligne = une publication x un auteur)
     df = merged.copy()
+
+    # Compléter la colonne "year" à partir de "published" si besoin
+    if "year" not in df.columns or df["year"].isna().any():
+        year_from_published = pd.to_datetime(
+            df["published"], errors="coerce"
+        ).dt.year
+        if "year" in df.columns:
+            df["year"] = df["year"].fillna(year_from_published)
+        else:
+            df["year"] = year_from_published
 
     # Filtre années
     if selected_years:
@@ -212,6 +244,23 @@ def main():
         mask_summary = df["summary"].fillna("").str.contains(search_text, case=False, na=False)
         df = df[mask_title | mask_summary]
 
+    # Filtre supplémentaire : auteur contient...
+    if author_substring.strip():
+        df = df[
+            df["author_name"]
+            .fillna("")
+            .str.contains(author_substring.strip(), case=False, na=False)
+        ]
+
+    # Filtre supplémentaire : intervalle de dates published
+    if date_range and isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+        start_date, end_date = date_range
+        df_published_dt = pd.to_datetime(df["published"], errors="coerce")
+        mask_date = (df_published_dt.dt.date >= start_date) & (
+            df_published_dt.dt.date <= end_date
+        )
+        df = df[mask_date]
+
     # Zone de stats globales
     col1, col2, col3, col4 = st.columns(4)
     with col1:
@@ -225,6 +274,33 @@ def main():
 
     st.subheader("Tableau détaillé (une ligne = papier × auteur)")
 
+    # Filtres spécifiques à la table (juste au-dessus)
+    col_f1, col_f2 = st.columns([1, 2])
+
+    with col_f1:
+        years_for_table = sorted(df["year"].dropna().unique()) if "year" in df.columns else []
+        selected_years_table = st.multiselect(
+            "Années (tableau)",
+            options=years_for_table,
+            default=years_for_table,
+        )
+
+    with col_f2:
+        author_filter_table = st.text_input(
+            "Filtrer par nom d'auteur (tableau)",
+            value="",
+        )
+
+    df_table = df.copy()
+    if selected_years_table:
+        df_table = df_table[df_table["year"].isin(selected_years_table)]
+    if author_filter_table.strip():
+        df_table = df_table[
+            df_table["author_name"]
+            .fillna("")
+            .str.contains(author_filter_table.strip(), case=False, na=False)
+        ]
+
     display_cols = [
         "year",
         "published",
@@ -234,15 +310,15 @@ def main():
         "id_url",
         "doi",
         "categories",
-        "relation_type",
-        "notes",
     ]
     for col in display_cols:
-        if col not in df.columns:
-            df[col] = None
+        if col not in df_table.columns:
+            df_table[col] = None
 
     st.dataframe(
-        df[display_cols].sort_values(["year", "author_name", "title"], ascending=[False, True, True]),
+        df_table[display_cols].sort_values(
+            ["year", "author_name", "title"], ascending=[False, True, True]
+        ),
         use_container_width=True,
         height=500,
     )
@@ -250,9 +326,9 @@ def main():
     st.markdown("---")
     st.subheader("Vue agrégée par publication")
 
-    # Regrouper par publication
+    # Regrouper par publication (à partir des données visibles dans le tableau)
     grouped = (
-        df.groupby(
+        df_table.groupby(
             ["arxiv_id", "title", "year", "published", "id_url", "doi", "categories"],
             dropna=False,
         )
@@ -292,14 +368,37 @@ def main():
             .reset_index(name="nombre_de_publications")
             .sort_values("year", ascending=True)
         )
+
+        # Pivot pour avoir les années comme noms de colonnes (1 ligne, N colonnes)
+        pubs_per_year_wide = pubs_per_year.set_index("year").T
+        pubs_per_year_wide.index = ["nombre_de_publications"]
+
+        st.write("Tableau (1 ligne, colonnes = années) :")
         st.dataframe(
-            pubs_per_year,
-            use_container_width=False,
+            pubs_per_year_wide,
+            use_container_width=True,
+        )
+
+        st.write("Graphique du nombre de publications par année :")
+        st.bar_chart(
+            pubs_per_year.set_index("year")["nombre_de_publications"]
         )
 
     st.markdown(
         """
         #### Comment mettre à jour la liste des auteurs ?
+
+        **Méthode rapide (depuis le dashboard)**
+
+        - Utilise le formulaire dans la barre latérale **“Gestion de la liste d'auteurs”**.
+        - Renseigne :
+            - `Nom complet du nouvel auteur` : nom tel qu'il apparaît sur ArXiv,
+            - `Identifiant court` (optionnel) : sera généré automatiquement si tu laisses vide,
+            - coche ou non **“Employé Quandela ?”**,
+            - ajoute éventuellement des `Notes`.
+        - Clique sur **“Ajouter à authors_quandela.csv”** : l'auteur est immédiatement pris en compte dans les filtres.
+
+        **Méthode avancée (édition du fichier)**
 
         - Ouvre le fichier `authors_quandela.csv` dans un éditeur (ou Excel / Google Sheets).
         - Ajoute une ligne par auteur potentiel :
@@ -307,7 +406,7 @@ def main():
             - `short_name` : identifiant court (sans espace, pratique pour du code),
             - `is_quandela_employee` : `1` si employé Quandela, `0` sinon,
             - `notes` : commentaires (équipe, rôle, etc.).
-        - Sauvegarde, puis **rafraîchis la page Streamlit** (bouton en haut à droite).
+        - Sauvegarde, puis **rafraîchis la page Streamlit** (ou laisse l'app se recharger).
         """
     )
 
