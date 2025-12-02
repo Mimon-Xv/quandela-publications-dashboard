@@ -10,6 +10,41 @@ ARXIV_CSV = DATA_DIR / "arxiv_quandela_publications.csv"
 AUTHORS_CSV = DATA_DIR / "authors_quandela.csv"
 
 
+def _append_author_to_csv(name: str, short_name: str, is_employee: bool, notes: str) -> None:
+    """
+    Ajoute un auteur dans authors_quandela.csv (local au container Streamlit).
+
+    Attention : sur Streamlit Community Cloud, cette écriture n'est pas
+    répercutée vers GitHub et peut être perdue au redéploiement.
+    """
+    name = name.strip()
+    short_name = short_name.strip() or name.lower().replace(" ", "_")
+    notes = notes.strip()
+
+    if not name:
+        return
+
+    if AUTHORS_CSV.exists():
+        df = pd.read_csv(AUTHORS_CSV)
+    else:
+        df = pd.DataFrame(
+            columns=["name", "short_name", "is_quandela_employee", "notes"]
+        )
+
+    # Éviter les doublons exacts sur le nom
+    if not df[df["name"] == name].empty:
+        return
+
+    new_row = {
+        "name": name,
+        "short_name": short_name,
+        "is_quandela_employee": 1 if is_employee else 0,
+        "notes": notes,
+    }
+    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+    df.to_csv(AUTHORS_CSV, index=False)
+
+
 @st.cache_data(show_spinner=False)
 def load_data(from_arxiv: bool, keyword: str):
     """
@@ -86,6 +121,29 @@ def main():
         "Interroger ArXiv en direct (recommandé)", value=True
     )
     keyword = st.sidebar.text_input("Mot-clé global ArXiv", value="quandela")
+
+    st.sidebar.header("Gestion de la liste d'auteurs")
+    with st.sidebar.form("add_author_form", clear_on_submit=True):
+        new_name = st.text_input("Nom complet du nouvel auteur")
+        new_short = st.text_input("Identifiant court (optionnel)")
+        new_is_emp = st.checkbox("Employé Quandela ?", value=True)
+        new_notes = st.text_input("Notes (facultatif)")
+        submitted_new_author = st.form_submit_button("Ajouter à authors_quandela.csv")
+
+    if submitted_new_author:
+        if not new_name.strip():
+            st.sidebar.error("Le nom de l'auteur ne peut pas être vide.")
+        else:
+            _append_author_to_csv(
+                name=new_name,
+                short_name=new_short,
+                is_employee=new_is_emp,
+                notes=new_notes,
+            )
+            # On vide le cache puis on relance l'app pour recharger les données
+            load_data.clear()
+            st.sidebar.success(f"Auteur ajouté : {new_name}")
+            st.experimental_rerun()
 
     st.sidebar.header("Filtres")
 
@@ -169,6 +227,7 @@ def main():
 
     display_cols = [
         "year",
+        "published",
         "author_name",
         "title",
         "arxiv_id",
@@ -194,7 +253,7 @@ def main():
     # Regrouper par publication
     grouped = (
         df.groupby(
-            ["arxiv_id", "title", "year", "id_url", "doi", "categories"],
+            ["arxiv_id", "title", "year", "published", "id_url", "doi", "categories"],
             dropna=False,
         )
         .agg(
